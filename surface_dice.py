@@ -7,8 +7,6 @@ import torch.nn as nn
 from PIL import Image
 
 
-device =  "cuda" if torch.cuda.is_available() else "cpu"
-
 # PyTorch version dependence on index data type
 torch_ver_major = int(torch.__version__.split('.')[0])
 dtype_index = torch.int32 if torch_ver_major >= 2 else torch.long
@@ -509,7 +507,7 @@ def create_table_neighbour_code_to_surface_area(spacing_mm):
 
     return neighbour_code_to_surface_area.astype(np.float32)
 
-def compute_area(y: list, unfold: nn.Unfold, area: torch.Tensor) -> torch.Tensor:
+def compute_area(y: list, unfold: nn.Unfold, area: torch.Tensor, device) -> torch.Tensor:
     """
     Args:
       y (list[Tensor]): A pair of consecutive slices of mask
@@ -542,7 +540,7 @@ def compute_area(y: list, unfold: nn.Unfold, area: torch.Tensor) -> torch.Tensor
 
     return cubes_area
 
-def compute_surface_dice_score(pred: torch.Tensor, target: torch.Tensor) -> float:
+def compute_surface_dice_score(pred: torch.Tensor, target: torch.Tensor, device, return_num_denom=False) -> float:
     assert pred.shape == target.shape
 
     # Surface area lookup table: Tensor[float32] (256, )
@@ -569,8 +567,8 @@ def compute_surface_dice_score(pred: torch.Tensor, target: torch.Tensor) -> floa
             y1 = y1_pred = torch.zeros((h, w), dtype=torch.uint8, device=device)
 
         # Compute the surface area between two slices (n_cubes,)
-        area_pred = compute_area([y0_pred, y1_pred], unfold, area)
-        area_true = compute_area([y0, y1], unfold, area)
+        area_pred = compute_area([y0_pred, y1_pred], unfold, area, device=device)
+        area_true = compute_area([y0, y1], unfold, area, device=device)
 
         # True positive cube indices
         idx = torch.logical_and(area_pred > 0, area_true > 0)
@@ -583,5 +581,8 @@ def compute_surface_dice_score(pred: torch.Tensor, target: torch.Tensor) -> floa
         y0 = y1
         y0_pred = y1_pred
 
-    dice = num / denom.clamp(min=1e-8)
-    return dice.item()
+    if return_num_denom:
+        return num, denom
+    else: 
+        dice = num / denom.clamp(min=1e-8)
+        return dice.item()

@@ -1,3 +1,5 @@
+import numpy as np
+
 def rle_encode(img):
     '''
     img: numpy array, 1 - mask, 0 - background
