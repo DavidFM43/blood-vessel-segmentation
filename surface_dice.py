@@ -487,19 +487,10 @@ class SurfaceDiceMetric:
         self.batch_idx = 0
         self.numerator = 0
         self.denominator = 0
+        self.pred_pad = -1
+        self.target_pad = -1
 
     def create_table_neighbour_code_to_surface_area(self, spacing_mm):
-        """Returns an array mapping neighbourhood code to the surface elements area.
-
-        Note that the normals encode the initial surface area. This function computes
-        the area corresponding to the given `spacing_mm`.
-
-        Args:
-            spacing_mm: 3-element list-like structure. Voxel spacing in x0, x1 and x2
-            direction.
-        """
-        # compute the area for all 256 possible surface elements
-        # (given a 2x2x2 neighbourhood) according to the spacing_mm
         neighbour_code_to_surface_area = np.zeros([256])
         for code in range(256):
             normals = np.array(_NEIGHBOUR_CODE_TO_NORMALS[code])
@@ -517,9 +508,8 @@ class SurfaceDiceMetric:
         return neighbour_code_to_surface_area.astype(np.float32)
 
     def compute_surface_area(self, surface):
-        bs, h, w = surface.shape  
-        surface = surface.to(torch.float16).reshape(bs // 2, 2, h, w)
-        cubes_float = self.unfold(surface).permute(1, 0, 2).reshape(8, -1)  # (bs // 2, 8, n_cubes)
+        surface = surface.to(torch.float16).unsqueeze(0)
+        cubes_float = self.unfold(surface).squeeze(0)
         cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index)
         
         for k in range(8):
@@ -537,15 +527,21 @@ class SurfaceDiceMetric:
         elif self.batch_idx == self.n_batches - 1:
             pred = torch.vstack([pred, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
             target = torch.vstack([target, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
+        else:
+            pred = torch.vstack([self.pred_pad, pred])
+            target = torch.vstack([self.target_pad, target])
 
-        area_pred = self.compute_surface_area(pred)
-        area_true = self.compute_surface_area(target)
+        for window in range(len(pred) - 1):
+            area_pred = self.compute_surface_area(pred[window:window+2])
+            area_true = self.compute_surface_area(target[window:window+2])
+            idx = torch.logical_and(area_pred > 0, area_true > 0)
 
-        idx = torch.logical_and(area_pred > 0, area_true > 0)
+            self.numerator += area_pred[idx].sum() + area_true[idx].sum()
+            self.denominator += area_pred.sum() + area_true.sum()
 
-        self.numerator += area_pred[idx].sum() + area_true[idx].sum()
-        self.denominator += area_pred.sum() + area_true.sum()
         self.batch_idx += 1
+        self.pred_pad = pred[-1:]
+        self.target_pad = target[-1:]
 
     def compute_metric(self):
         dice = self.numerator / self.denominator.clamp(min=1e-8)
