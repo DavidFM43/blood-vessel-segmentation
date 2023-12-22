@@ -517,9 +517,11 @@ class SurfaceDiceMetric:
 
     def compute_surface_area(self, surface) -> torch.Tensor:
         unfold = torch.nn.Unfold(kernel_size=(2, 2), padding=1)
-        surface = surface.to(torch.float16).unsqueeze(0)
-        cubes_float = unfold(surface).squeeze(0)
-        cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index, device=device)
+
+        bs, h, w = surface.shape
+        surface = surface.to(torch.float16).view(bs // 2, 2, h, w)
+        cubes_float = unfold(surface).permute(1, 0, 2).view(8, -1)  # (bs // 2, 8, n_cubes)
+        cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index)
         
         for k in range(8):
             cubes_byte += cubes_float[k, :].to(dtype_index) << k
