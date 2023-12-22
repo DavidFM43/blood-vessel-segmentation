@@ -509,25 +509,25 @@ class SurfaceDiceMetric:
         return neighbour_code_to_surface_area.astype(np.float32)
 
     def compute_surface_area(self, surface):
-        surface = surface.to(torch.float16).unsqueeze(0)
-        cubes_float = self.unfold(surface).squeeze(0)
-        cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index, device=self.device)
-        
-        for k in range(8):
-            cubes_byte += cubes_float[k, :].to(dtype_index) << k
+        d, h, w = surface.shape
+        surface = surface.view(1, 1, d, h, w).long()
+        weight = (2**torch.arange(8)).view(1, 1, 2, 2, 2).long()
+        cubes_byte = torch.nn.functional.conv3d(surface, weight, padding=(0, 1, 1)).flatten()
 
         cubes_area = self.area[cubes_byte]
         return cubes_area
 
     def process_batch(self, pred, target):
         bs, h, w = pred.shape
-        padding_ammount = int(bs % 2 == 0) + 1
+        pad_d = int(bs % 2 == 0) + 1
+        pad = torch.zeros((pad_d, h, w), dtype=torch.uint8, device=self.device)
+
         if self.batch_idx == 0:
-            pred = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device), pred])
-            target = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device), target])
+            pred = torch.vstack([pad, pred])
+            target = torch.vstack([pad, target])
         elif self.batch_idx == self.n_batches - 1:
-            pred = torch.vstack([pred, torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device)])
-            target = torch.vstack([target, torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device)])
+            pred = torch.vstack([pred, pad])
+            target = torch.vstack([target, pad])
         else:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
