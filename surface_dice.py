@@ -480,9 +480,10 @@ _NEIGHBOUR_CODE_TO_NORMALS = [[[0, 0, 0]], [[0.125, 0.125, 0.125]],
 
 
 class SurfaceDiceMetric:
-    def __init__(self, num_batches):
-        self.num_batches = num_batches
+    def __init__(self, n_batches):
+        self.n_batches = n_batches
         self.area = torch.from_numpy(self.create_table_neighbour_code_to_surface_area((1, 1, 1)))
+        self.unfold = torch.nn.Unfold(kernel_size=(2, 2), padding=1)
         self.batch_idx = 0
         self.numerator = 0
         self.denominator = 0
@@ -515,12 +516,10 @@ class SurfaceDiceMetric:
 
         return neighbour_code_to_surface_area.astype(np.float32)
 
-    def compute_surface_area(self, surface) -> torch.Tensor:
-        unfold = torch.nn.Unfold(kernel_size=(2, 2), padding=1)
-
-        bs, h, w = surface.shape
-        surface = surface.to(torch.float16).view(bs // 2, 2, h, w)
-        cubes_float = unfold(surface).permute(1, 0, 2).view(8, -1)  # (bs // 2, 8, n_cubes)
+    def compute_surface_area(self, surface):
+        bs, h, w = surface.shape  
+        surface = surface.to(torch.float16).reshape(bs // 2, 2, h, w)
+        cubes_float = self.unfold(surface).permute(1, 0, 2).reshape(8, -1)  # (bs // 2, 8, n_cubes)
         cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index)
         
         for k in range(8):
@@ -529,22 +528,25 @@ class SurfaceDiceMetric:
         cubes_area = self.area[cubes_byte]
         return cubes_area
 
-    def process_batch(pred, target):
+    def process_batch(self, pred, target):
+        bs, h, w = pred.shape
+        padding_ammount = int(bs % 2 == 0) + 1
         if self.batch_idx == 0:
-            pred = torch.stack([torch.zeros((h, w), dtype=torch.uint8), pred])
-            target = torch.stack([torch.zeros((h, w), dtype=torch.uint8), target])
-        elif self.batch_idx == num_batches - 1:
-            pred = torch.stack([pred, torch.zeros((h, w), dtype=torch.uint8)])
-            target = torch.stack([target, torch.zeros((h, w), dtype=torch.uint8)])
+            pred = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8), pred])
+            target = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8), target])
+        elif self.batch_idx == self.n_batches - 1:
+            pred = torch.vstack([pred, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
+            target = torch.vstack([target, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
 
-        area_pred = compute_area(pred)
-        area_true = compute_area(target)
+        area_pred = self.compute_surface_area(pred)
+        area_true = self.compute_surface_area(target)
 
         idx = torch.logical_and(area_pred > 0, area_true > 0)
 
-        self.num += area_pred[idx].sum() + area_true[idx].sum()
-        self.denom += area_pred.sum() + area_true.sum()
+        self.numerator += area_pred[idx].sum() + area_true[idx].sum()
+        self.denominator += area_pred.sum() + area_true.sum()
+        self.batch_idx += 1
 
-    def compute_metric():
-        dice = self.num / self.denom.clamp(min=1e-8)
+    def compute_metric(self):
+        dice = self.numerator / self.denominator.clamp(min=1e-8)
         return dice.item()
