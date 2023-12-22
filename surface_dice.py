@@ -506,7 +506,8 @@ class SurfaceDiceMetric:
                 sum_area += area
             neighbour_code_to_surface_area[code] = sum_area
 
-        return neighbour_code_to_surface_area.astype(np.float32)
+        print(neighbour_code_to_surface_area.dtype)
+        return neighbour_code_to_surface_area
 
     def compute_surface_area(self, surface):
         d, h, w = surface.shape
@@ -532,12 +533,49 @@ class SurfaceDiceMetric:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
 
-        area_pred = self.compute_surface_area(pred)
-        area_true = self.compute_surface_area(target)
-        idx = torch.logical_and(area_pred > 0, area_true > 0)
+        area_pred_total = self.compute_surface_area(pred)
+        area_true_total = self.compute_surface_area(target)
+        idx = torch.logical_and(area_pred_total > 0, area_true_total > 0)
+        n1 = area_pred_total[idx].sum().item() + area_true_total[idx].sum().item()
+        d1 = area_pred_total.sum().item() + area_true_total.sum().item()
+        # n1 = area_pred_total[idx].view(k, -1).sum(1).sum() + area_true_total[idx].view(k, -1).sum(1).sum() 
+        # d1 = area_pred_total.view(k, -1).sum(1).sum() + area_true_total.view(k, -1).sum(1).sum()
 
-        self.numerator += area_pred[idx].sum() + area_true[idx].sum()
-        self.denominator += area_pred.sum() + area_true.sum()
+
+
+        area_pred_total_2 = torch.tensor([])
+        area_true_total_2 = torch.tensor([])
+        n2 = 0
+        d2 = 0
+
+        for window in range(len(pred) - 1):
+            area_pred = self.compute_surface_area(pred[window:window+2])
+            area_true = self.compute_surface_area(target[window:window+2])
+            
+            area_pred_total_2 = torch.cat([area_pred_total_2, area_pred])
+            area_true_total_2 = torch.cat([area_true_total_2, area_true])
+
+            idx = torch.logical_and(area_pred > 0, area_true > 0)
+
+            self.numerator += area_pred[idx].sum() + area_true[idx].sum()
+            self.denominator += area_pred.sum() + area_true.sum()
+
+            n2 += area_pred[idx].sum().item() + area_true[idx].sum().item()
+            d2 += area_pred.sum().item() + area_true.sum().item()
+        
+
+        # idx2 = torch.logical_and(area_pred_total_2 > 0, area_true_total_2 > 0)
+        # n2 = area_pred_total_2[idx2].sum().item() + area_true_total_2[idx2].sum().item()
+        # d2 = area_pred_total_2.sum().item() + area_true_total_2.sum().item()
+
+        if n1 == n2:
+            print(True)
+        else:
+            print("numerator", abs(n1-n2))
+        if d1 == d2:
+            print(True)
+        else:
+            print("denominator", abs(d1- d2))
 
         self.batch_idx += 1
         self.pred_pad = pred[-1:]
