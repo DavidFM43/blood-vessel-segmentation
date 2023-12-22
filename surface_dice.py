@@ -510,11 +510,11 @@ class SurfaceDiceMetric:
 
     def compute_surface_area(self, surface):
         d, h, w = surface.shape
-        surface = surface.view(1, 1, d, h, w).long()
-        weight = (2**torch.arange(8)).view(1, 1, 2, 2, 2).long()
+        surface = surface.view(1, 1, d, h, w).float()
+        weight = (2**torch.arange(8, device=self.device)).view(1, 1, 2, 2, 2).float()
         cubes_byte = torch.nn.functional.conv3d(surface, weight, padding=(0, 1, 1)).flatten()
 
-        cubes_area = self.area[cubes_byte]
+        cubes_area = self.area[cubes_byte.int()]
         return cubes_area
 
     def process_batch(self, pred, target):
@@ -532,13 +532,12 @@ class SurfaceDiceMetric:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
 
-        for window in range(len(pred) - 1):
-            area_pred = self.compute_surface_area(pred[window:window+2])
-            area_true = self.compute_surface_area(target[window:window+2])
-            idx = torch.logical_and(area_pred > 0, area_true > 0)
+        area_pred = self.compute_surface_area(pred)
+        area_true = self.compute_surface_area(target)
+        idx = torch.logical_and(area_pred > 0, area_true > 0)
 
-            self.numerator += area_pred[idx].sum() + area_true[idx].sum()
-            self.denominator += area_pred.sum() + area_true.sum()
+        self.numerator += area_pred[idx].sum() + area_true[idx].sum()
+        self.denominator += area_pred.sum() + area_true.sum()
 
         self.batch_idx += 1
         self.pred_pad = pred[-1:]
