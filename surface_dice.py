@@ -480,9 +480,10 @@ _NEIGHBOUR_CODE_TO_NORMALS = [[[0, 0, 0]], [[0.125, 0.125, 0.125]],
 
 
 class SurfaceDiceMetric:
-    def __init__(self, n_batches):
+    def __init__(self, n_batches, device):
         self.n_batches = n_batches
-        self.area = torch.from_numpy(self.create_table_neighbour_code_to_surface_area((1, 1, 1)))
+        self.device = device
+        self.area = torch.from_numpy(self.create_table_neighbour_code_to_surface_area((1, 1, 1))).to(self.device)
         self.unfold = torch.nn.Unfold(kernel_size=(2, 2), padding=1)
         self.batch_idx = 0
         self.numerator = 0
@@ -510,7 +511,7 @@ class SurfaceDiceMetric:
     def compute_surface_area(self, surface):
         surface = surface.to(torch.float16).unsqueeze(0)
         cubes_float = self.unfold(surface).squeeze(0)
-        cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index)
+        cubes_byte = torch.zeros(cubes_float.size(1), dtype=dtype_index, device=self.device)
         
         for k in range(8):
             cubes_byte += cubes_float[k, :].to(dtype_index) << k
@@ -522,11 +523,11 @@ class SurfaceDiceMetric:
         bs, h, w = pred.shape
         padding_ammount = int(bs % 2 == 0) + 1
         if self.batch_idx == 0:
-            pred = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8), pred])
-            target = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8), target])
+            pred = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device), pred])
+            target = torch.vstack([torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device), target])
         elif self.batch_idx == self.n_batches - 1:
-            pred = torch.vstack([pred, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
-            target = torch.vstack([target, torch.zeros((padding_ammount, h, w), dtype=torch.uint8)])
+            pred = torch.vstack([pred, torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device)])
+            target = torch.vstack([target, torch.zeros((padding_ammount, h, w), dtype=torch.uint8, device=self.device)])
         else:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
