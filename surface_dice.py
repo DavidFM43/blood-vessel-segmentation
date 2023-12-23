@@ -506,7 +506,7 @@ class SurfaceDiceMetric:
                 sum_area += area
             neighbour_code_to_surface_area[code] = sum_area
 
-        return neighbour_code_to_surface_area
+        return neighbour_code_to_surface_area.astype(np.float32)
 
     def compute_surface_area(self, surface):
         d, h, w = surface.shape
