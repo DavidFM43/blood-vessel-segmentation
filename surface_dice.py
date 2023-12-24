@@ -537,3 +537,10 @@ class SurfaceDiceMetric:
     def compute_metric(self):
         dice = self.numerator / self.denominator.clamp(min=1e-8)
         return dice.item()
+
+    def reset(self):
+        self.batch_idx = 0
+        self.numerator = 0
+        self.denominator = 0
+        self.pred_pad = -1
+        self.target_pad = -1
