@@ -516,10 +516,12 @@ class SurfaceDiceMetric:
         if self.batch_idx == 0:
             pred = torch.vstack([pad, pred])
             target = torch.vstack([pad, target])
-        elif self.batch_idx == self.n_batches - 1:
+        if self.batch_idx == self.n_batches - 1:
+        # elif self.batch_idx == self.n_batches - 1:
             pred = torch.vstack([pred, pad])
             target = torch.vstack([target, pad])
-        else:
+        if self.batch_idx > 0 and self.batch_idx < self.n_batches - 1:
+        # else:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
 
@@ -534,7 +536,7 @@ class SurfaceDiceMetric:
         self.pred_pad = pred[-1:]
         self.target_pad = target[-1:]
 
-    def compute_metric(self):
+    def compute(self):
         dice = self.numerator / self.denominator.clamp(min=1e-8)
         return dice.item()
 
