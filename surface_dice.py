@@ -516,14 +516,13 @@ class SurfaceDiceMetric:
         if self.batch_idx == 0:
             pred = torch.vstack([pad, pred])
             target = torch.vstack([pad, target])
-        if self.batch_idx == self.n_batches - 1:
-        # elif self.batch_idx == self.n_batches - 1:
-            pred = torch.vstack([pred, pad])
-            target = torch.vstack([target, pad])
-        if self.batch_idx > 0 and self.batch_idx < self.n_batches - 1:
-        # else:
+        else:
             pred = torch.vstack([self.pred_pad, pred])
             target = torch.vstack([self.target_pad, target])
+
+        if self.batch_idx == self.n_batches - 1:
+            pred = torch.vstack([pred, pad])
+            target = torch.vstack([target, pad])
 
         area_pred = self.compute_surface_area(pred)
         area_target = self.compute_surface_area(target)
