@@ -160,3 +160,6 @@ cython_debug/
 #.idea/
 other/
 preds/
+data/
+checkpoints/
+wandb/
