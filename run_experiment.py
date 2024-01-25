@@ -9,8 +9,9 @@ import logger_utils
 import torch.distributed as dist
 from algorithm import init_optimizer_state
 import halton 
+import struct
 import json
-
+import random_utils as prng
 
 
 flags.DEFINE_string(
@@ -73,6 +74,9 @@ if USE_PYTORCH_DDP:
 else:
     get_time = _get_time
 
+train_global_batch_size = 10
+eval_global_batch_size = 10
+
 def run_study(
         data_dir: str,
         profiler,
@@ -85,8 +89,6 @@ def run_study(
 ):
     # Expand paths because '~' may not be recognized
     data_dir = os.path.expanduser(data_dir)
-    train_global_batch_size = 10
-    eval_global_batch_size = 10
     
     if train_global_batch_size % N_GPUS != 0:
         raise ValueError(f"The global batch size ({train_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS}).")
@@ -96,8 +98,25 @@ def run_study(
     with open(tuning_search_space, "r", encoding="UTF-8") as search_space_file:
         tuning_search_space = halton.generate_search(json.load(search_space_file), num_tuning_trials)
     
-    for hyperparameters in  enumerate(tuning_search_space):
-        print(hyperparameters)
+    for hi, hyperparameters in enumerate(tuning_search_space):
+        if not rng_seed:
+            rng_seed = struct.unpack('I', os.urandom(4))[0]
+        logging.info(f'Using RNG seed {rng_seed}')
+        rng = prng.PRNGKey(rng_seed)
+        logging.info(f'--- Tuning run {hi + 1}/{num_tuning_trials} ---')
+
+        tuning_dir_name = None
+        if log_dir is not None:
+            tuning_dir_name = os.path.join(log_dir, f'trial_{hi + 1}')
+            logging.info(f'Creating tuning directory at {tuning_dir_name}.')
+            logger_utils.makedir(tuning_dir_name)
+
+            # If existing hyperparameter exists, use saved hyperparameters for consistency.
+            hyperparameters = logger_utils.write_hparams(hyperparameters, tuning_dir_name)
+            tuning_search_space[hi] = hyperparameters
+        
+        # with profiler.profile('Train'):
+        #     timing, metrics = train_once()
 
     return 0.99
 

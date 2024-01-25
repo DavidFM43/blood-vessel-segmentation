@@ -72,16 +72,14 @@ def get_log_dir(
   return experiment_path
 
 
-def write_hparams(hparams,
-                  tuning_dir: str):
+def write_hparams(hparams, tuning_dir: str):
   hparams_file_name = os.path.join(tuning_dir, 'hparams.json')
   if os.path.exists(hparams_file_name):
     # If hparams.json already exist, use the previously saved hyperparameters.
     logging.info('Loading hparams from %s.', hparams_file_name)
     with open(hparams_file_name, 'r') as f:
       hparams_dict = json.load(f)
-    hparams = collections.namedtuple('Hyperparameters',
-                                     hparams_dict)(**hparams_dict)
+    hparams = collections.namedtuple('Hyperparameters', hparams_dict)(**hparams_dict)
   else:
     logging.info('Saving hparams to %s.', hparams_file_name)
     if RANK == 0:
