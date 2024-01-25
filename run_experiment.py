@@ -12,6 +12,7 @@ import halton
 import struct
 import json
 import random_utils as prng
+import workload
 
 
 flags.DEFINE_string(
@@ -77,6 +78,19 @@ else:
 train_global_batch_size = 10
 eval_global_batch_size = 10
 
+def train_once(data_dir, rng, global_batch_size, profiler):
+    data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
+    # Workload setup.
+    logging.info('Initializing dataset.')
+    with profiler.profile('Initializing dataset'):
+        input_queue = workload.build_input_queue(
+            data_rng,
+            'train',
+            data_dir=data_dir,
+            global_batch_size=global_batch_size
+        )
+        # batch = next(input_queue)
+
 def run_study(
         data_dir: str,
         profiler,
@@ -115,8 +129,8 @@ def run_study(
             hyperparameters = logger_utils.write_hparams(hyperparameters, tuning_dir_name)
             tuning_search_space[hi] = hyperparameters
         
-        # with profiler.profile('Train'):
-        #     timing, metrics = train_once()
+        with profiler.profile('Train'):
+            train_once(data_dir, rng, train_global_batch_size, profiler)
 
     return 0.99
 
