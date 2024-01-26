@@ -6,12 +6,12 @@ from PIL import Image
 
 class KidneyDataset(torch.utils.data.Dataset):
     def __init__(self, data_dir, split, transforms=None):
-        if split == "train":
+        if split in ["train", "eval_train"]:
             self.imgs_dir = os.path.join(data_dir, "kidney_1_dense", "images")
             self.msks_dir = os.path.join(data_dir, "kidney_1_dense", "labels")
         elif split == "validation":
-            self.imgs_dir = os.path.join(data_dir, "kidney_1_sparse", "images")
-            self.msks_dir = os.path.join(data_dir, "kidney_1_sparse", "labels")
+            self.imgs_dir = os.path.join(data_dir, "kidney_3_sparse", "images")
+            self.msks_dir = os.path.join(data_dir, "kidney_3_sparse", "labels")
 
         self.slices_ids = sorted(os.listdir(self.imgs_dir))
         self.transforms = transforms

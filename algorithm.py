@@ -67,7 +67,7 @@ def update_params(
         model=model, batch=batch, mode="train", update_batch_norm=True
     )
 
-    loss = workload.loss_fn(logits_batch, batch["targets"])
+    loss = workload.loss_fn(logits_batch, batch["targets"]).mean()
     loss.backward()
 
     if hasattr(hyperparameters, "grad_clip"):

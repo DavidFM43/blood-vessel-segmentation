@@ -85,8 +85,8 @@ if USE_PYTORCH_DDP:
 else:
     get_time = _get_time
 
-train_global_batch_size = 10
-eval_global_batch_size = 10
+train_global_batch_size = 32
+eval_global_batch_size = 32
 
 
 def train_once(
@@ -98,19 +98,18 @@ def train_once(
     log_dir,
     rng_seed,
     max_global_steps,
+    save_checkpoints,
 ):
     data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
     # Workload setup.
     logging.info("Initializing dataset.")
     with profiler.profile("Initializing dataset"):
         input_queue = workload.build_input_queue(
-            data_rng, "train", data_dir=data_dir, global_batch_size=global_batch_size
+            rng=data_rng, split="train", data_dir=data_dir, global_batch_size=global_batch_size
         )
     logging.info("Initializing model.")
     with profiler.profile("Initializing model"):
         model = workload.init_model_fn(model_init_rng)
-        # model = torch.compile(model)
-        # workload.loss_fn = torch.compile(workload.loss_fn)
     with profiler.profile("Initializing optimizer"):
         optimizer_state = init_optimizer_state(max_global_steps, model, hyperparameters)
 
@@ -118,12 +117,12 @@ def train_once(
     # Bookkeeping.
     train_state = {
         "is_time_remaining": True,
-        "last_eval_time": 0,
         "training_complete": False,
-        "accumulated_submission_time": 0,
+        "last_step_end_time": 0,
+        "last_eval_time": 0,
+        "accumulated_run_time": 0,
         "accumulated_eval_time": 0,
         "accumulated_logging_time": 0,
-        "last_step_end_time": None,
     }
     global_step = 0
     eval_results = []
@@ -160,28 +159,110 @@ def train_once(
             log_dir, flags.FLAGS, hyperparameters
         )
 
-        global_start_time = get_time()
-        train_state["last_step_end_time"] = global_start_time
+    global_start_time = get_time()
+    train_state["last_step_end_time"] = global_start_time
 
-        logging.info("Starting training loop.")
-        while train_state["is_time_remaining"] and not train_state["training_complete"]:
-            step_rng = prng.fold_in(rng, global_step)
-            data_select_rng, update_rng, eval_rng = prng.split(step_rng, 3)
-            with profiler.profile("Data selection"):
-                batch = next(input_queue)
-            try:
-                with profiler.profile("Update parameters"):
-                    optimizer_state, model = update_params(
-                        model=model,
-                        hyperparameters=hyperparameters,
-                        batch=batch,
-                        optimizer_state=optimizer_state,
-                        global_step=global_step,
-                        metrics_logger=metrics_logger,
+    logging.info("Starting training loop.")
+    while train_state["is_time_remaining"] and not train_state["training_complete"]:
+        step_rng = prng.fold_in(rng, global_step)
+        data_select_rng, update_rng, eval_rng = prng.split(step_rng, 3)
+        with profiler.profile("Data selection"):
+            batch = next(input_queue)
+        try:
+            with profiler.profile("Update parameters"):
+                optimizer_state, model = update_params(
+                    model=model,
+                    hyperparameters=hyperparameters,
+                    batch=batch,
+                    optimizer_state=optimizer_state,
+                    global_step=global_step,
+                    metrics_logger=metrics_logger,
+                )
+        except TrainingCompleteError:
+            train_state["training_complete"] = True
+
+        global_step += 1
+        if (max_global_steps is not None) and (global_step == max_global_steps):
+            train_state["training_complete"] = True
+
+        # accumulate training time
+        train_step_end_time = get_time()
+        train_state["accumulated_run_time"] += (
+            train_step_end_time - train_state["last_step_end_time"]
+        )
+        train_state["is_time_remaining"] = (
+            train_state["accumulated_run_time"]
+            < workload.max_allowed_runtime_sec
+        )
+
+        # evaluation
+        if (
+            train_step_end_time - train_state["last_eval_time"]
+        ) >= workload.eval_period_time_sec or train_state["training_complete"]:
+            with profiler.profile("Evaluation"):
+                del batch
+                _reset_cuda_mem()
+                try:
+                    eval_start_time = get_time()
+                    latest_eval_result = workload.eval_model(eval_global_batch_size, model, data_dir)
+                    # Save last eval time.
+                    eval_end_time = get_time()
+                    train_state["last_eval_time"] = eval_end_time
+
+                    # Accumulate eval time.
+                    train_state["accumulated_eval_time"] += (
+                        eval_end_time - eval_start_time
                     )
-            except TrainingCompleteError:
-                train_state["training_complete"] = True
-            break
+                    eval_results.append((global_step, latest_eval_result))
+
+                    logging_start_time = get_time()
+                    if log_dir is not None:
+                        metrics_logger.append_scalar_metrics(
+                            latest_eval_result,
+                            global_step=global_step,
+                            preemption_count=preemption_count,
+                            is_eval=True,
+                        )
+                        # if save_checkpoints:
+                        #     checkpoint_utils.save_checkpoint()
+
+                    logging_end_time = get_time()
+                    train_state["accumulated_logging_time"] += (
+                        logging_end_time - logging_start_time
+                    )
+
+                    _reset_cuda_mem()
+                except RuntimeError as e:
+                    logging.exception(f"Eval step {global_step} error.\n")
+                    if "out of memory" in str(e):
+                        logging.warning(
+                            "Error: GPU out of memory during eval during step "
+                            f"{global_step}, error : {str(e)}."
+                        )
+                        _reset_cuda_mem()
+            train_state['last_step_end_time'] = get_time()
+
+    metrics = {'eval_results': eval_results, 'global_step': global_step}
+
+    if log_dir is not None:
+        metrics_logger.append_scalar_metrics(
+            {'score': train_state['accumulated_submission_time']},
+            global_step=global_step,
+            preemption_count=preemption_count)
+        metrics_logger.finish()
+        # checkpoint_utils.save_checkpoint(
+        #     framework=FLAGS.framework,
+        #     optimizer_state=optimizer_state,
+        #     model_params=model_params,
+        #     model_state=model_state,
+        #     train_state=train_state,
+        #     eval_results=eval_results,
+        #     global_step=global_step,
+        #     preemption_count=preemption_count,
+        #     checkpoint_dir=log_dir,
+        #     save_intermediate_checkpoints=FLAGS.save_intermediate_checkpoints)
+
+    return metrics
 
 
 def run_study(
@@ -210,7 +291,7 @@ def run_study(
         tuning_search_space = halton.generate_search(
             json.load(search_space_file), num_tuning_trials
         )
-
+    all_metrics = []
     for hi, hyperparameters in enumerate(tuning_search_space):
         if not rng_seed:
             rng_seed = struct.unpack("I", os.urandom(4))[0]
@@ -231,7 +312,7 @@ def run_study(
             tuning_search_space[hi] = hyperparameters
 
         with profiler.profile("Train"):
-            train_once(
+            metrics = train_once(
                 data_dir,
                 rng,
                 train_global_batch_size,
@@ -240,7 +321,17 @@ def run_study(
                 log_dir,
                 rng_seed,
                 max_global_steps,
+                save_checkpoints,
             )
+            all_metrics.append(metrics)
+            logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
+            logging.info(f'Hyperparameters: {tuning_search_space[hi]}')
+            logging.info(f'Metrics: {all_metrics[hi]}')
+            num_evals = len(all_metrics[hi]['eval_results'])
+            logging.info(f'Total number of evals: {num_evals}')
+            logging.info('=' * 20)
+            score = min(metrics)
+            return score
 
     return 0.99
 

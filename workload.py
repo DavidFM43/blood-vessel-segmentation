@@ -1,4 +1,5 @@
 from input_pipeline import KidneyDataset
+from tqdm import tqdm
 import pytorch_utils
 import data_utils
 import albumentations as A
@@ -7,24 +8,36 @@ import segmentation_models_pytorch as smp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch import nn
 import contextlib
+from absl import logging
+from torch import nn
+import random_utils as prng
+from surface_dice import SurfaceDiceMetric
+from typing import Dict
+from patcher import Patcher
 
 
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_utils.pytorch_setup()
 patch_size = 224
+patch_overlap = 50
 enconder_name = "timm-mobilenetv3_small_075"
 enconder_weights = None
 in_channels = 1
 num_classes = 1
-loss_fn = nn.BCEWithLogitsLoss()
+loss_fn = nn.BCEWithLogitsLoss(reduction="none")
+max_allowed_runtime_sec = 3600  # 1 hour
+eval_period_time_sec = 600  # 10 min
+PR_THRESHOLD = 0.5
 
 
-def build_input_queue(rng, split, data_dir, global_batch_size):
+
+def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True):
     is_train = split == "train"
     train_transforms = A.Compose([A.RandomCrop(patch_size, patch_size)])
     eval_transforms = None
     transforms = train_transforms if is_train else eval_transforms
 
-    torch.random.manual_seed(rng[0])
+    if rng is not None:
+        torch.random.manual_seed(rng[0])
 
     ds = KidneyDataset(data_dir=data_dir, split=split, transforms=transforms)
 
@@ -50,15 +63,16 @@ def build_input_queue(rng, split, data_dir, global_batch_size):
         batch_size=ds_iter_batch_size,
         shuffle=not USE_PYTORCH_DDP and is_train,
         sampler=sampler,
-        num_workers=1,
+        num_workers=8,
         pin_memory=True,
         drop_last=is_train,
         persistent_workers=is_train,
     )
     dataloader = data_utils.PrefetchedWrapper(dataloader, DEVICE)
-    dataloader = data_utils.cycle(
-        dataloader, custom_sampler=USE_PYTORCH_DDP, use_mixup=False
-    )
+    if cycle:
+        dataloader = data_utils.cycle(
+            dataloader, custom_sampler=USE_PYTORCH_DDP, use_mixup=False
+        )
 
     return dataloader
 
@@ -82,11 +96,17 @@ def init_model_fn(rng):
 
 def model_fn(model, batch, mode, update_batch_norm):
     del update_batch_norm
-
+    bs, c, h, w =  batch["inputs"].shape
+    patcher = Patcher(h, w, patch_size=patch_size, overlap=patch_overlap)
     inputs = batch["inputs"]
+
+    if mode == "eval_train":
+        mode = "eval"
 
     if mode == "eval":
         model.eval()
+        inputs = patcher.extract_patches(inputs)  # (B, n_patches, C, H, W)
+        inputs = inputs.flatten(end_dim=1)  # (B * n_patches, C, H, W)
 
     if mode == "train":
         model.train()
@@ -94,6 +114,63 @@ def model_fn(model, batch, mode, update_batch_norm):
     contexts = {"train": contextlib.nullcontext, "eval": torch.no_grad}
 
     with contexts[mode]():
-        logits_batch = model(inputs).squeeze()
+        logits_batch = model(inputs)
 
-    return logits_batch
+    if mode == "eval":
+        logits_batch = logits_batch.unflatten(0, (bs, -1))  # (B, n_patches, C, H, W)
+        logits_batch = patcher.merge_patches(logits_batch)  # (B, C, H, W)
+
+    return logits_batch.squeeze()
+
+def _eval_model_on_split(split, global_batch_size, model, data_dir):
+    input_queue = build_input_queue(
+          split=split,
+          data_dir=data_dir,
+          global_batch_size=global_batch_size,
+          cycle=False)
+    dice_metric = SurfaceDiceMetric(n_batches=len(input_queue), device=DEVICE)
+    loss = 0
+    n = 0
+    for batch in tqdm(input_queue, desc="evaluting"):
+        batch = {"inputs": batch[0], "targets": batch[1]}
+        logits_batch = model_fn(model, batch, split, update_batch_norm=False)
+        loss_batch = loss_fn(logits_batch, batch["targets"])
+        predicted = torch.where(logits_batch >= PR_THRESHOLD, 1, 0)
+        dice_metric.process_batch(predicted, batch["targets"])
+        loss += loss_batch.sum().item()
+        n += len(logits_batch)
+
+    surface_dice = dice_metric.compute()
+    loss /= n
+    metrics = {
+        "surface_dice": surface_dice,
+        "loss": loss
+        }
+    return metrics
+        
+def eval_model(
+            global_batch_size: int,
+            model: nn.Module,
+            data_dir: str,
+            ) -> Dict[str, float]:
+    """Run a full evaluation of the model."""
+    logging.info('Evaluating on the training split.')
+    train_metrics = _eval_model_on_split(
+        'eval_train',
+        global_batch_size,
+        model,
+        data_dir,
+        )
+    eval_metrics = {'train/' + k: v for k, v in train_metrics.items()}
+
+    # We always require a validation set.
+    logging.info('Evaluating on the validation split.')
+    validation_metrics = _eval_model_on_split(
+        'validation',
+        global_batch_size,
+        model,
+        data_dir)
+    for k, v in validation_metrics.items():
+      eval_metrics['validation/' + k] = v
+
+    return eval_metrics
