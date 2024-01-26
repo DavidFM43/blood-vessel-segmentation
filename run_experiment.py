@@ -11,6 +11,7 @@ from algorithm import init_optimizer_state
 import halton 
 import struct
 import json
+import torch
 import random_utils as prng
 import workload
 
@@ -89,7 +90,12 @@ def train_once(data_dir, rng, global_batch_size, profiler):
             data_dir=data_dir,
             global_batch_size=global_batch_size
         )
-        # batch = next(input_queue)
+    logging.info("Initializing model.")
+    with profiler.profile('Initializing model'):
+        model = workload.init_model_fn(model_init_rng)
+        model = torch.compile(model)
+        workload.loss_fn = torch.compile(workload.loss_fn)
+        
 
 def run_study(
         data_dir: str,
