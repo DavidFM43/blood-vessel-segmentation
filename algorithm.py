@@ -52,8 +52,7 @@ def update_params(model,
                   batch: Dict[str, torch.Tensor],
                   optimizer_state,
                   global_step: int,
-                  rng,
-                  metric_logger = None
+                  metrics_logger = None
                   ):
   """Return (updated_optimizer_state, updated_params, updated_model_state)."""
   model.train()
@@ -63,18 +62,17 @@ def update_params(model,
       model=model,
       batch=batch,
       mode="train",
-      rng=rng,
       update_batch_norm=True)
 
   loss = workload.loss_fn(
-      targets=batch['targets'],
-      inputs=logits_batch
+      logits_batch,
+      batch['targets']
   )
   loss.backward()
 
   if hasattr(hyperparameters, 'grad_clip'):
     grad_clip = hyperparameters.grad_clip
-    torch.nn.utils.clip_grad_norm_(current_model.parameters(), max_norm=grad_clip)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
 
@@ -85,7 +83,7 @@ def update_params(model,
       grad_norm = torch.norm(
           torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
     if metrics_logger is not None:
-      workload.metrics_logger.append_scalar_metrics(
+      metrics_logger.append_scalar_metrics(
           {
               'loss': loss.item(),
               'grad_norm': grad_norm.item(),

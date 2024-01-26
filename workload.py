@@ -24,6 +24,8 @@ def build_input_queue(rng, split, data_dir, global_batch_size):
     eval_transforms = None
     transforms = train_transforms if is_train else eval_transforms
 
+    torch.random.manual_seed(rng[0])
+    
     ds = KidneyDataset(data_dir=data_dir, split=split, transforms=transforms)
     
     sampler = None
@@ -46,7 +48,7 @@ def build_input_queue(rng, split, data_dir, global_batch_size):
         batch_size=ds_iter_batch_size,
         shuffle=not USE_PYTORCH_DDP and is_train,
         sampler=sampler,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True,
         drop_last=is_train,
         persistent_workers=is_train
@@ -74,9 +76,8 @@ def init_model_fn(rng):
     return model
 
 
-def model_fn(model, batch, mode, rng, update_batch_norm):
+def model_fn(model, batch, mode, update_batch_norm):
     del update_batch_norm
-    del rng
 
     inputs = batch['inputs']
 
@@ -87,9 +88,11 @@ def model_fn(model, batch, mode, rng, update_batch_norm):
       model.train()
 
     contexts = {
-        "train": torch.no_grad,
-        "eval": contextlib.nullcontext,
+        "train": contextlib.nullcontext,
+        "eval": torch.no_grad
     }
 
     with contexts[mode]():
-      logits_batch = model(inputs)
+      logits_batch = model(inputs).squeeze()
+
+    return logits_batch
