@@ -6,6 +6,7 @@ import torch
 import segmentation_models_pytorch as smp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch import nn
+import contextlib
 
 
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_utils.pytorch_setup()
@@ -72,3 +73,23 @@ def init_model_fn(rng):
         model = torch.nn.DataParallel(model)
     return model
 
+
+def model_fn(model, batch, mode, rng, update_batch_norm):
+    del update_batch_norm
+    del rng
+
+    inputs = batch['inputs']
+
+    if mode == "eval":
+      model.eval()
+
+    if mode == "train":
+      model.train()
+
+    contexts = {
+        "train": torch.no_grad,
+        "eval": contextlib.nullcontext,
+    }
+
+    with contexts[mode]():
+      logits_batch = model(inputs)

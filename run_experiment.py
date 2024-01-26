@@ -7,7 +7,7 @@ from profiler import Profiler, PassThroughProfiler
 import datetime
 import logger_utils
 import torch.distributed as dist
-from algorithm import init_optimizer_state
+from algorithm import init_optimizer_state, update_params
 import halton 
 import struct
 import json
@@ -15,6 +15,9 @@ import torch
 import random_utils as prng
 import workload
 
+
+class TrainingCompleteError(Exception):
+  pass
 
 flags.DEFINE_string(
     "tuning_search_space",
@@ -94,8 +97,8 @@ def train_once(data_dir, rng, global_batch_size, profiler, hyperparameters, log_
     logging.info("Initializing model.")
     with profiler.profile('Initializing model'):
         model = workload.init_model_fn(model_init_rng)
-        model = torch.compile(model)
-        workload.loss_fn = torch.compile(workload.loss_fn)
+        # model = torch.compile(model)
+        # workload.loss_fn = torch.compile(workload.loss_fn)
     with profiler.profile('Initializing optimizer'):
         optimizer_state = init_optimizer_state(max_global_steps, model, hyperparameters)
 
@@ -142,6 +145,30 @@ def train_once(data_dir, rng, global_batch_size, profiler, hyperparameters, log_
         logger_utils.write_json(flag_file_name, flags.FLAGS.flag_values_dict())
 
         metrics_logger = logger_utils.set_up_loggers(log_dir, flags.FLAGS, hyperparameters)
+
+        global_start_time = get_time()
+        train_state['last_step_end_time'] = global_start_time
+
+        logging.info('Starting training loop.')
+        while train_state['is_time_remaining'] and not train_state['training_complete']:
+            step_rng = prng.fold_in(rng, global_step)
+            data_select_rng, update_rng, eval_rng = prng.split(step_rng, 3)
+            with profiler.profile('Data selection'):
+                batch = next(input_queue)
+            try:
+                with profiler.profile('Update parameters'):
+                    optimizer_state, model = update_params(
+                        model=model,
+                        hyperparameters=hyperparameters,
+                        batch=batch,
+                        optimizer_state=optimizer_state,
+                        global_step=global_step,
+                        rng=update_rng, 
+                        metric_logger=metrics_logger)
+            except TrainingCompleteError:
+                train_state['training_complete'] = True
+            break
+
 
 def run_study(
         data_dir: str,

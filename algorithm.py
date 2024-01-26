@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.optim.lr_scheduler import LinearLR
 from torch.optim.lr_scheduler import SequentialLR
 from torch import nn
-
+import workload
 from pytorch_utils import pytorch_setup
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
@@ -47,3 +47,49 @@ def init_optimizer_state(n_steps,
 
   return optimizer_state
 
+def update_params(model,
+                  hyperparameters,
+                  batch: Dict[str, torch.Tensor],
+                  optimizer_state,
+                  global_step: int,
+                  rng,
+                  metric_logger = None
+                  ):
+  """Return (updated_optimizer_state, updated_params, updated_model_state)."""
+  model.train()
+  optimizer_state['optimizer'].zero_grad()
+
+  logits_batch = workload.model_fn(
+      model=model,
+      batch=batch,
+      mode="train",
+      rng=rng,
+      update_batch_norm=True)
+
+  loss = workload.loss_fn(
+      targets=batch['targets'],
+      inputs=logits_batch
+  )
+  loss.backward()
+
+  if hasattr(hyperparameters, 'grad_clip'):
+    grad_clip = hyperparameters.grad_clip
+    torch.nn.utils.clip_grad_norm_(current_model.parameters(), max_norm=grad_clip)
+  optimizer_state['optimizer'].step()
+  optimizer_state['scheduler'].step()
+
+  # Log training metrics - loss, grad_norm, batch_size.
+  if global_step <= 10 or global_step % 500 == 0:
+    with torch.no_grad():
+      parameters = [p for p in model.parameters() if p.grad is not None]
+      grad_norm = torch.norm(
+          torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
+    if metrics_logger is not None:
+      workload.metrics_logger.append_scalar_metrics(
+          {
+              'loss': loss.item(),
+              'grad_norm': grad_norm.item(),
+          }, global_step)
+    logging.info(f'{global_step}) loss = {loss.item():0.3f}, grad_norm = {grad_norm.item():0.3f}'),
+
+  return optimizer_state, model
