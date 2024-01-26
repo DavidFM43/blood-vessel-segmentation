@@ -90,7 +90,7 @@ def train_once(
     logging.info("Initializing model.")
     with profiler.profile("Initializing model"):
         model = workload.init_model_fn(model_init_rng)
-        model = torch.compile(model)
+        # model = torch.compile(model)
         # workload.loss_fn = torch.compile(workload.loss_fn)
     with profiler.profile("Initializing optimizer"):
         optimizer_state = init_optimizer_state(max_global_steps, model, hyperparameters)
