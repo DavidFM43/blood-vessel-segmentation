@@ -237,18 +237,12 @@ def _is_primitive_type(item: Any) -> bool:
 
 def _get_workload_properties(workload) -> Dict:
   workload_properties = {}
-  skip_list = ['param_shapes', 'model_params_types']
-  keys = [
-      key for key in dir(workload)
-      if not key.startswith('_') and key not in skip_list
-  ]
+  keys = [key for key in dir(workload) if not key.startswith('_')]
   for key in keys:
     try:
       attr = getattr(workload, key)
-    except:  # pylint: disable=bare-except
-      logging.info(
-          f'Unable to record workload.{key} information. Continuing without it.'
-      )
+    except:  
+      logging.info(f'Unable to record workload.{key} information. Continuing without it.')
     if _is_primitive_type(attr):
       workload_properties[f'workload.{key}'] = attr
   return workload_properties
@@ -280,19 +274,14 @@ class MetricLogger(object):
   def __init__(self,
                csv_path: str,
                eval_csv_path: str,
-               events_dir: Optional[str] = None,
+               log_dir: Optional[str] = None,
                configs: Optional[flags.FLAGS] = None,
                hyperparameters = None) -> None:
-    self._measurements = {}
     self._csv_path = csv_path
     self._eval_csv_path = eval_csv_path
     self.use_wandb = configs.use_wandb
-
-    if events_dir:
-      self._tb_metric_writer = metric_writers.create_default_writer(events_dir)
-      if wandb is not None and self.use_wandb:
-        wandb.init(
-            dir=events_dir, tags=[flags.FLAGS.workload, flags.FLAGS.framework])
+    if wandb is not None and self.use_wandb:
+        wandb.init(dir=log_dir)
         wandb.config.update(configs)
         wandb.config.update(hyperparameters._asdict())
 
@@ -309,11 +298,6 @@ class MetricLogger(object):
     if is_eval:
       write_to_csv(metrics, self._eval_csv_path)
 
-    if self._tb_metric_writer:
-      self._tb_metric_writer.write_scalars(
-          step=int(metrics['global_step']), scalars=metrics)
-      self._tb_metric_writer.flush()
-
     if wandb is not None and self.use_wandb:
       wandb.log(metrics)
 
@@ -322,15 +306,15 @@ class MetricLogger(object):
       wandb.finish()
 
 
-def set_up_loggers(train_dir: str,
+def set_up_loggers(log_dir: str,
                    configs: flags.FLAGS,
                    hyperparameters) -> MetricLogger:
-  csv_path = os.path.join(train_dir, 'measurements.csv')
-  eval_csv_path = os.path.join(train_dir, 'eval_measurements.csv')
+  csv_path = os.path.join(log_dir, 'measurements.csv')
+  eval_csv_path = os.path.join(log_dir, 'eval_measurements.csv')
   metrics_logger = MetricLogger(
       csv_path=csv_path,
       eval_csv_path=eval_csv_path,
-      events_dir=train_dir,
+      log_dir=log_dir,
       configs=configs,
       hyperparameters=hyperparameters)
   return metrics_logger

@@ -15,7 +15,7 @@ from pytorch_utils import pytorch_setup
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
 
-def init_optimizer_state(workload,
+def init_optimizer_state(n_steps,
                          model: nn.Module,
                          hyperparameters,
                          ):
@@ -43,7 +43,7 @@ def init_optimizer_state(workload,
         optimizer, schedulers=[warmup, cosine_decay], milestones=[warmup_steps])
 
   optimizer_state['scheduler'] = pytorch_cosine_warmup(
-      workload.step_hint, hyperparameters, optimizer_state['optimizer'])
+      n_steps, hyperparameters, optimizer_state['optimizer'])
 
   return optimizer_state
 

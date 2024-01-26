@@ -79,7 +79,8 @@ else:
 train_global_batch_size = 10
 eval_global_batch_size = 10
 
-def train_once(data_dir, rng, global_batch_size, profiler):
+
+def train_once(data_dir, rng, global_batch_size, profiler, hyperparameters, log_dir, rng_seed, max_global_steps):
     data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
     # Workload setup.
     logging.info('Initializing dataset.')
@@ -95,7 +96,52 @@ def train_once(data_dir, rng, global_batch_size, profiler):
         model = workload.init_model_fn(model_init_rng)
         model = torch.compile(model)
         workload.loss_fn = torch.compile(workload.loss_fn)
+    with profiler.profile('Initializing optimizer'):
+        optimizer_state = init_optimizer_state(max_global_steps, model, hyperparameters)
+
+    logging.info('Initializing metrics bundle.')
+    # Bookkeeping.
+    train_state = {
+        'is_time_remaining': True,
+        'last_eval_time': 0,
+        'training_complete': False,
+        'accumulated_submission_time': 0,
+        'accumulated_eval_time': 0,
+        'accumulated_logging_time': 0,
+        'last_step_end_time': None,
+    }
+    global_step = 0
+    eval_results = []
+    preemption_count = 0 
+
+    # Loggers and checkpoint setup.
+    logging.info('Initializing checkpoint and logger.')
+    if log_dir is not None:
+        # If the checkpoint exists, load from the checkpoint.
+        # (optimizer_state,
+        # model,
+        # train_state,
+        # eval_results,
+        # global_step,
+        # preemption_count) = checkpoint_utils.maybe_restore_checkpoint(
+        #     optimizer_state,
+        #     model,
+        #     train_state,
+        #     eval_results,
+        #     global_step,
+        #     preemption_count,
+        #     checkpoint_dir=log_dir)
         
+        meta_file_name = os.path.join(log_dir, f'meta_data_{preemption_count}.json')
+        logging.info(f'Saving meta data to {meta_file_name}.')
+        meta_data = logger_utils.get_meta_data(workload, rng_seed)
+        logger_utils.write_json(meta_file_name, meta_data)
+
+        flag_file_name = os.path.join(log_dir, f'flags_{preemption_count}.json')
+        logging.info(f'Saving flags to {flag_file_name}.')
+        logger_utils.write_json(flag_file_name, flags.FLAGS.flag_values_dict())
+
+        metrics_logger = logger_utils.set_up_loggers(log_dir, flags.FLAGS, hyperparameters)
 
 def run_study(
         data_dir: str,
@@ -136,7 +182,7 @@ def run_study(
             tuning_search_space[hi] = hyperparameters
         
         with profiler.profile('Train'):
-            train_once(data_dir, rng, train_global_batch_size, profiler)
+            train_once(data_dir, rng, train_global_batch_size, profiler, hyperparameters, log_dir, rng_seed, max_global_steps)
 
     return 0.99
 
@@ -179,4 +225,5 @@ if __name__ == "__main__":
     flags.mark_flag_as_required("experiment_dir")
     flags.mark_flag_as_required("experiment_name")
     flags.mark_flag_as_required("tuning_search_space")
+    flags.mark_flag_as_required("max_global_steps")
     app.run(main)
