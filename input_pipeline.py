@@ -3,6 +3,7 @@ import torch
 import os
 from PIL import Image
 
+
 class KidneyDataset(torch.utils.data.Dataset):
     def __init__(self, data_dir, split, transforms=None):
         if split == "train":
@@ -34,7 +35,7 @@ class KidneyDataset(torch.utils.data.Dataset):
             t = self.transforms(image=img, mask=msk)
             img = t["image"]
             msk = t["mask"]
-            
+
         img = torch.from_numpy(img)[None, :]
         msk = torch.as_tensor(msk)
         img /= 31000

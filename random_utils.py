@@ -1,4 +1,3 @@
-
 from typing import Any, List, Union
 
 from absl import flags
@@ -16,24 +15,24 @@ SeedType = Union[int, list, np.ndarray]
 
 
 def _signed_to_unsigned(seed: SeedType) -> SeedType:
-  if isinstance(seed, int):
-    return seed + 2**32 if seed < 0 else seed
-  if isinstance(seed, list):
-    return [s + 2**32 if s < 0 else s for s in seed]
-  if isinstance(seed, np.ndarray):
-    return np.array([s + 2**32 if s < 0 else s for s in seed.tolist()])
+    if isinstance(seed, int):
+        return seed + 2**32 if seed < 0 else seed
+    if isinstance(seed, list):
+        return [s + 2**32 if s < 0 else s for s in seed]
+    if isinstance(seed, np.ndarray):
+        return np.array([s + 2**32 if s < 0 else s for s in seed.tolist()])
 
 
 def split(seed: SeedType, num: int = 2) -> SeedType:
-  rng = np.random.RandomState(seed=_signed_to_unsigned(seed))
-  return rng.randint(MIN_INT32, MAX_INT32, dtype=np.int32, size=[num, 2])
+    rng = np.random.RandomState(seed=_signed_to_unsigned(seed))
+    return rng.randint(MIN_INT32, MAX_INT32, dtype=np.int32, size=[num, 2])
 
 
 def fold_in(seed: SeedType, data: Any) -> List[Union[SeedType, Any]]:
-  rng = np.random.RandomState(seed=_signed_to_unsigned(seed))
-  new_seed = rng.randint(MIN_INT32, MAX_INT32, dtype=np.int32)
-  return [new_seed, data]
+    rng = np.random.RandomState(seed=_signed_to_unsigned(seed))
+    new_seed = rng.randint(MIN_INT32, MAX_INT32, dtype=np.int32)
+    return [new_seed, data]
 
 
 def PRNGKey(seed: SeedType) -> SeedType:  # pylint: disable=invalid-name
-  return split(seed, num=2)[0]
+    return split(seed, num=2)[0]

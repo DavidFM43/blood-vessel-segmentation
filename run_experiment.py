@@ -2,7 +2,13 @@ from absl import app
 import os
 from absl import flags
 from absl import logging
-from pytorch_utils import pytorch_setup, _get_time, _get_time_ddp, _reset_cuda_mem, pytorch_init
+from pytorch_utils import (
+    pytorch_setup,
+    _get_time,
+    _get_time_ddp,
+    _reset_cuda_mem,
+    pytorch_init,
+)
 from profiler import Profiler, PassThroughProfiler
 import datetime
 import logger_utils
@@ -25,7 +31,9 @@ flags.DEFINE_string(
     None,
     "The path to the JSON file describing the external tuning search space.",
 )
-flags.DEFINE_integer("num_tuning_trials", 1, "The number of external hyperparameter trials to run.")
+flags.DEFINE_integer(
+    "num_tuning_trials", 1, "The number of external hyperparameter trials to run."
+)
 flags.DEFINE_string("data_dir", None, "Dataset location.")
 flags.DEFINE_string(
     "experiment_dir",
@@ -41,7 +49,9 @@ flags.DEFINE_boolean(
     "Whether to save any intermediate checkpoints. "
     "If False, it will only keep the latest checkpoint.",
 )
-flags.DEFINE_boolean("resume_last_run", None, "Whether to resume the experiment from its last run.")
+flags.DEFINE_boolean(
+    "resume_last_run", None, "Whether to resume the experiment from its last run."
+)
 flags.DEFINE_boolean(
     "append_timestamp",
     False,
@@ -60,7 +70,9 @@ flags.DEFINE_boolean(
     "save_checkpoints", True, "Whether or not to checkpoint the model at every eval."
 )
 flags.DEFINE_integer(
-    "rng_seed", None, "Value of rng seed. If None, a random seed will" "be generated from hardware."
+    "rng_seed",
+    None,
+    "Value of rng seed. If None, a random seed will" "be generated from hardware.",
 )
 flags.DEFINE_boolean(
     "set_pytorch_max_split_size", False, "If true, set pytorch max_split_size_mb to 256"
@@ -78,7 +90,14 @@ eval_global_batch_size = 10
 
 
 def train_once(
-    data_dir, rng, global_batch_size, profiler, hyperparameters, log_dir, rng_seed, max_global_steps
+    data_dir,
+    rng,
+    global_batch_size,
+    profiler,
+    hyperparameters,
+    log_dir,
+    rng_seed,
+    max_global_steps,
 ):
     data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
     # Workload setup.
@@ -137,7 +156,9 @@ def train_once(
         logging.info(f"Saving flags to {flag_file_name}.")
         logger_utils.write_json(flag_file_name, flags.FLAGS.flag_values_dict())
 
-        metrics_logger = logger_utils.set_up_loggers(log_dir, flags.FLAGS, hyperparameters)
+        metrics_logger = logger_utils.set_up_loggers(
+            log_dir, flags.FLAGS, hyperparameters
+        )
 
         global_start_time = get_time()
         train_state["last_step_end_time"] = global_start_time
@@ -204,7 +225,9 @@ def run_study(
             logger_utils.makedir(tuning_dir_name)
 
             # If existing hyperparameter exists, use saved hyperparameters for consistency.
-            hyperparameters = logger_utils.write_hparams(hyperparameters, tuning_dir_name)
+            hyperparameters = logger_utils.write_hparams(
+                hyperparameters, tuning_dir_name
+            )
             tuning_search_space[hi] = hyperparameters
 
         with profiler.profile("Train"):
