@@ -1,1 +1,5 @@
 segmentation-models-pytorch
+absl-py
+gputil==1.4.0
+psutil==5.9.5
+pandas

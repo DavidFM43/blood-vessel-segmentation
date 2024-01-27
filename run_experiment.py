@@ -1,5 +1,6 @@
 from absl import app
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 from absl import flags
 from absl import logging
 from pytorch_utils import (
@@ -86,7 +87,106 @@ else:
     get_time = _get_time
 
 train_global_batch_size = 32
-eval_global_batch_size = 32
+eval_global_batch_size = 16
+
+
+def main(_):
+    profiler = Profiler() if FLAGS.profile else PassThroughProfiler()
+    pytorch_init(USE_PYTORCH_DDP, RANK, profiler)
+
+    experiment_name = FLAGS.experiment_name
+    if experiment_name and FLAGS.append_timestamp:
+        experiment_name += datetime.datetime.now().strftime("-%Y-%m-%d-%H-%M-%S")
+    logging_dir_path = logger_utils.get_log_dir(
+        FLAGS.experiment_dir, experiment_name, FLAGS.resume_last_run, FLAGS.overwrite
+    )
+
+    score = run_study(
+        data_dir=FLAGS.data_dir,
+        profiler=profiler,
+        max_global_steps=FLAGS.max_global_steps,
+        tuning_search_space=FLAGS.tuning_search_space,
+        num_tuning_trials=FLAGS.num_tuning_trials,
+        log_dir=logging_dir_path,
+        save_checkpoints=FLAGS.save_checkpoints,
+        rng_seed=FLAGS.rng_seed,
+    )
+    logging.info(f"Best validation score: {score}")
+
+    if FLAGS.profile:
+        logging.info(profiler.summary())
+
+    if USE_PYTORCH_DDP:
+        # Cleanup.
+        dist.destroy_process_group()
+
+
+def run_study(
+    data_dir: str,
+    profiler,
+    max_global_steps: int,
+    tuning_search_space: str,
+    num_tuning_trials: int,
+    log_dir: str,
+    save_checkpoints: bool,
+    rng_seed,
+):
+    if train_global_batch_size % N_GPUS != 0:
+        raise ValueError(
+            f"The global batch size ({train_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
+        )
+    if eval_global_batch_size % N_GPUS != 0:
+        raise ValueError(
+            f"The global eval batch size ({eval_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
+        )
+
+    with open(tuning_search_space, "r", encoding="UTF-8") as search_space_file:
+        tuning_search_space = halton.generate_search(
+            json.load(search_space_file), num_tuning_trials
+        )
+    all_metrics = []
+    for hi, hyperparameters in enumerate(tuning_search_space):
+        if not rng_seed:
+            rng_seed = struct.unpack("I", os.urandom(4))[0]
+        logging.info(f"Using RNG seed {rng_seed}")
+        rng = prng.PRNGKey(rng_seed)
+        logging.info(f"--- Tuning run {hi + 1}/{num_tuning_trials} ---")
+
+        tuning_dir_name = None
+        if log_dir is not None:
+            tuning_dir_name = os.path.join(log_dir, f"trial_{hi + 1}")
+            logging.info(f"Creating tuning directory at {tuning_dir_name}.")
+            logger_utils.makedir(tuning_dir_name)
+
+            # If existing hyperparameter exists, use saved hyperparameters for consistency.
+            hyperparameters = logger_utils.write_hparams(
+                hyperparameters, tuning_dir_name
+            )
+            tuning_search_space[hi] = hyperparameters
+
+        with profiler.profile("Train"):
+            metrics = train_once(
+                data_dir,
+                rng,
+                train_global_batch_size,
+                profiler,
+                hyperparameters,
+                log_dir,
+                rng_seed,
+                max_global_steps,
+                save_checkpoints,
+            )
+            all_metrics.append(metrics)
+            logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
+            logging.info(f'Hyperparameters: {tuning_search_space[hi]}')
+            logging.info(f'Metrics: {all_metrics[hi]}')
+            num_evals = len(all_metrics[hi]['eval_results'])
+            logging.info(f'Total number of evals: {num_evals}')
+            logging.info('=' * 20)
+            score = min(metrics)
+            return score
+
+    return 0.99
 
 
 def train_once(
@@ -112,7 +212,6 @@ def train_once(
         model = workload.init_model_fn(model_init_rng)
     with profiler.profile("Initializing optimizer"):
         optimizer_state = init_optimizer_state(max_global_steps, model, hyperparameters)
-
     logging.info("Initializing metrics bundle.")
     # Bookkeeping.
     train_state = {
@@ -124,28 +223,11 @@ def train_once(
         "accumulated_eval_time": 0,
         "accumulated_logging_time": 0,
     }
-    global_step = 0
-    eval_results = []
-    preemption_count = 0
 
     # Loggers and checkpoint setup.
+    preemption_count = 0
     logging.info("Initializing checkpoint and logger.")
     if log_dir is not None:
-        # If the checkpoint exists, load from the checkpoint.
-        # (optimizer_state,
-        # model,
-        # train_state,
-        # eval_results,
-        # global_step,
-        # preemption_count) = checkpoint_utils.maybe_restore_checkpoint(
-        #     optimizer_state,
-        #     model,
-        #     train_state,
-        #     eval_results,
-        #     global_step,
-        #     preemption_count,
-        #     checkpoint_dir=log_dir)
-
         meta_file_name = os.path.join(log_dir, f"meta_data_{preemption_count}.json")
         logging.info(f"Saving meta data to {meta_file_name}.")
         meta_data = logger_utils.get_meta_data(workload, rng_seed)
@@ -159,6 +241,8 @@ def train_once(
             log_dir, flags.FLAGS, hyperparameters
         )
 
+    global_step = 0
+    eval_results = []
     global_start_time = get_time()
     train_state["last_step_end_time"] = global_start_time
 
@@ -263,112 +347,6 @@ def train_once(
         #     save_intermediate_checkpoints=FLAGS.save_intermediate_checkpoints)
 
     return metrics
-
-
-def run_study(
-    data_dir: str,
-    profiler,
-    max_global_steps: int,
-    tuning_search_space: str,
-    num_tuning_trials: int,
-    log_dir: str,
-    save_checkpoints: bool,
-    rng_seed,
-):
-    # Expand paths because '~' may not be recognized
-    data_dir = os.path.expanduser(data_dir)
-
-    if train_global_batch_size % N_GPUS != 0:
-        raise ValueError(
-            f"The global batch size ({train_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
-        )
-    if eval_global_batch_size % N_GPUS != 0:
-        raise ValueError(
-            f"The global eval batch size ({eval_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
-        )
-
-    with open(tuning_search_space, "r", encoding="UTF-8") as search_space_file:
-        tuning_search_space = halton.generate_search(
-            json.load(search_space_file), num_tuning_trials
-        )
-    all_metrics = []
-    for hi, hyperparameters in enumerate(tuning_search_space):
-        if not rng_seed:
-            rng_seed = struct.unpack("I", os.urandom(4))[0]
-        logging.info(f"Using RNG seed {rng_seed}")
-        rng = prng.PRNGKey(rng_seed)
-        logging.info(f"--- Tuning run {hi + 1}/{num_tuning_trials} ---")
-
-        tuning_dir_name = None
-        if log_dir is not None:
-            tuning_dir_name = os.path.join(log_dir, f"trial_{hi + 1}")
-            logging.info(f"Creating tuning directory at {tuning_dir_name}.")
-            logger_utils.makedir(tuning_dir_name)
-
-            # If existing hyperparameter exists, use saved hyperparameters for consistency.
-            hyperparameters = logger_utils.write_hparams(
-                hyperparameters, tuning_dir_name
-            )
-            tuning_search_space[hi] = hyperparameters
-
-        with profiler.profile("Train"):
-            metrics = train_once(
-                data_dir,
-                rng,
-                train_global_batch_size,
-                profiler,
-                hyperparameters,
-                log_dir,
-                rng_seed,
-                max_global_steps,
-                save_checkpoints,
-            )
-            all_metrics.append(metrics)
-            logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
-            logging.info(f'Hyperparameters: {tuning_search_space[hi]}')
-            logging.info(f'Metrics: {all_metrics[hi]}')
-            num_evals = len(all_metrics[hi]['eval_results'])
-            logging.info(f'Total number of evals: {num_evals}')
-            logging.info('=' * 20)
-            score = min(metrics)
-            return score
-
-    return 0.99
-
-
-def main(_):
-    if FLAGS.profile:
-        profiler = Profiler()
-    else:
-        profiler = PassThroughProfiler()
-
-    pytorch_init(USE_PYTORCH_DDP, RANK, profiler)
-
-    experiment_name = FLAGS.experiment_name
-    if experiment_name and FLAGS.append_timestamp:
-        experiment_name += datetime.datetime.now().strftime("-%Y-%m-%d-%H-%M-%S")
-    logging_dir_path = logger_utils.get_log_dir(
-        FLAGS.experiment_dir, experiment_name, FLAGS.resume_last_run, FLAGS.overwrite
-    )
-
-    score = run_study(
-        data_dir=FLAGS.data_dir,
-        profiler=profiler,
-        max_global_steps=FLAGS.max_global_steps,
-        tuning_search_space=FLAGS.tuning_search_space,
-        num_tuning_trials=FLAGS.num_tuning_trials,
-        log_dir=logging_dir_path,
-        save_checkpoints=FLAGS.save_checkpoints,
-        rng_seed=FLAGS.rng_seed,
-    )
-    logging.info(f"Best validation score: {score}")
-
-    if FLAGS.profile:
-        logging.info(profiler.summary())
-
-    if USE_PYTORCH_DDP:
-        # Cleanup.
-        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-from input_pipeline import KidneyDataset
 from tqdm import tqdm
 import pytorch_utils
 import data_utils
+from data_utils import KidneyDataset
 import albumentations as A
 import torch
 import segmentation_models_pytorch as smp
@@ -27,10 +27,11 @@ loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 max_allowed_runtime_sec = 3600  # 1 hour
 eval_period_time_sec = 600  # 10 min
 PR_THRESHOLD = 0.5
+num_workers = 2
 
 
 
-def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True):
+def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True, prefetch=True):
     is_train = split == "train"
     train_transforms = A.Compose([A.RandomCrop(patch_size, patch_size)])
     eval_transforms = None
@@ -63,12 +64,13 @@ def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True):
         batch_size=ds_iter_batch_size,
         shuffle=not USE_PYTORCH_DDP and is_train,
         sampler=sampler,
-        num_workers=8,
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=is_train,
         persistent_workers=is_train,
     )
-    dataloader = data_utils.PrefetchedWrapper(dataloader, DEVICE)
+    if prefetch:
+        dataloader = data_utils.PrefetchedWrapper(dataloader, DEVICE)
     if cycle:
         dataloader = data_utils.cycle(
             dataloader, custom_sampler=USE_PYTORCH_DDP, use_mixup=False
@@ -96,18 +98,16 @@ def init_model_fn(rng):
 
 def model_fn(model, batch, mode, update_batch_norm):
     del update_batch_norm
-    bs, c, h, w =  batch["inputs"].shape
-    patcher = Patcher(h, w, patch_size=patch_size, overlap=patch_overlap)
     inputs = batch["inputs"]
+    bs, c, h, w =  inputs.shape
+    patcher = Patcher(h, w, patch_size=patch_size, overlap=patch_overlap)
 
     if mode == "eval_train":
         mode = "eval"
-
     if mode == "eval":
         model.eval()
         inputs = patcher.extract_patches(inputs)  # (B, n_patches, C, H, W)
         inputs = inputs.flatten(end_dim=1)  # (B * n_patches, C, H, W)
-
     if mode == "train":
         model.train()
 
@@ -127,15 +127,19 @@ def _eval_model_on_split(split, global_batch_size, model, data_dir):
           split=split,
           data_dir=data_dir,
           global_batch_size=global_batch_size,
-          cycle=False)
+          cycle=False,
+          prefetch=True,
+          )
     dice_metric = SurfaceDiceMetric(n_batches=len(input_queue), device=DEVICE)
     loss = 0
     n = 0
+    
     for batch in tqdm(input_queue, desc="evaluting"):
         batch = {"inputs": batch[0], "targets": batch[1]}
         logits_batch = model_fn(model, batch, split, update_batch_norm=False)
         loss_batch = loss_fn(logits_batch, batch["targets"])
         predicted = torch.where(logits_batch >= PR_THRESHOLD, 1, 0)
+
         dice_metric.process_batch(predicted, batch["targets"])
         loss += loss_batch.sum().item()
         n += len(logits_batch)
