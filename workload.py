@@ -29,6 +29,20 @@ eval_period_time_sec = 600  # 10 min
 PR_THRESHOLD = 0.5
 num_workers = 2
 
+def get_global_eval_batch_size(split):
+    eval_global_batch_size = -1
+    # kidney_1_dense
+    if split == "eval_train":
+        eval_global_batch_size = 16
+    # kidney_3_sparse
+    if split == "eval":
+        eval_global_batch_size = 8
+    
+    if eval_global_batch_size % N_GPUS != 0:
+        raise ValueError(
+            f"The global eval batch size ({eval_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
+        )
+    return eval_global_batch_size
 
 
 def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True, prefetch=True):
@@ -122,11 +136,11 @@ def model_fn(model, batch, mode, update_batch_norm):
 
     return logits_batch.squeeze()
 
-def _eval_model_on_split(split, global_batch_size, model, data_dir):
+def _eval_model_on_split(split, model, data_dir):
     input_queue = build_input_queue(
           split=split,
           data_dir=data_dir,
-          global_batch_size=global_batch_size,
+          global_batch_size=get_global_eval_batch_size(split),
           cycle=False,
           prefetch=True,
           )
@@ -153,7 +167,6 @@ def _eval_model_on_split(split, global_batch_size, model, data_dir):
     return metrics
         
 def eval_model(
-            global_batch_size: int,
             model: nn.Module,
             data_dir: str,
             ) -> Dict[str, float]:
@@ -161,7 +174,6 @@ def eval_model(
     logging.info('Evaluating on the training split.')
     train_metrics = _eval_model_on_split(
         'eval_train',
-        global_batch_size,
         model,
         data_dir,
         )
@@ -170,8 +182,7 @@ def eval_model(
     # We always require a validation set.
     logging.info('Evaluating on the validation split.')
     validation_metrics = _eval_model_on_split(
-        'validation',
-        global_batch_size,
+        'eval',
         model,
         data_dir)
     for k, v in validation_metrics.items():

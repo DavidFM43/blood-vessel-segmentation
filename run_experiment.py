@@ -87,8 +87,6 @@ else:
     get_time = _get_time
 
 train_global_batch_size = 32
-eval_global_batch_size = 16
-
 
 def main(_):
     profiler = Profiler() if FLAGS.profile else PassThroughProfiler()
@@ -134,10 +132,6 @@ def run_study(
     if train_global_batch_size % N_GPUS != 0:
         raise ValueError(
             f"The global batch size ({train_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
-        )
-    if eval_global_batch_size % N_GPUS != 0:
-        raise ValueError(
-            f"The global eval batch size ({eval_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
         )
 
     with open(tuning_search_space, "r", encoding="UTF-8") as search_space_file:
@@ -201,7 +195,6 @@ def train_once(
     save_checkpoints,
 ):
     data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
-    # Workload setup.
     logging.info("Initializing dataset.")
     with profiler.profile("Initializing dataset"):
         input_queue = workload.build_input_queue(
@@ -288,7 +281,7 @@ def train_once(
                 _reset_cuda_mem()
                 try:
                     eval_start_time = get_time()
-                    latest_eval_result = workload.eval_model(eval_global_batch_size, model, data_dir)
+                    latest_eval_result = workload.eval_model(model, data_dir)
                     # Save last eval time.
                     eval_end_time = get_time()
                     train_state["last_eval_time"] = eval_end_time
@@ -307,8 +300,6 @@ def train_once(
                             preemption_count=preemption_count,
                             is_eval=True,
                         )
-                        # if save_checkpoints:
-                        #     checkpoint_utils.save_checkpoint()
 
                     logging_end_time = get_time()
                     train_state["accumulated_logging_time"] += (
@@ -324,7 +315,7 @@ def train_once(
                             f"{global_step}, error : {str(e)}."
                         )
                         _reset_cuda_mem()
-            train_state['last_step_end_time'] = get_time()
+        train_state['last_step_end_time'] = get_time()
 
     metrics = {'eval_results': eval_results, 'global_step': global_step}
 
@@ -334,17 +325,6 @@ def train_once(
             global_step=global_step,
             preemption_count=preemption_count)
         metrics_logger.finish()
-        # checkpoint_utils.save_checkpoint(
-        #     framework=FLAGS.framework,
-        #     optimizer_state=optimizer_state,
-        #     model_params=model_params,
-        #     model_state=model_state,
-        #     train_state=train_state,
-        #     eval_results=eval_results,
-        #     global_step=global_step,
-        #     preemption_count=preemption_count,
-        #     checkpoint_dir=log_dir,
-        #     save_intermediate_checkpoints=FLAGS.save_intermediate_checkpoints)
 
     return metrics
 

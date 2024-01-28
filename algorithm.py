@@ -86,7 +86,7 @@ def update_params(
         if metrics_logger is not None:
             metrics_logger.append_scalar_metrics(
                 {
-                    "loss": loss.item(),
+                    "loss": loss.mean().item(),
                     "grad_norm": grad_norm.item(),
                 },
                 global_step,

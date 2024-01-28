@@ -19,7 +19,7 @@ class KidneyDataset(torch.utils.data.Dataset):
         if split in ["train", "eval_train"]:
             self.imgs_dir = os.path.join(data_dir, "kidney_1_dense", "images")
             self.msks_dir = os.path.join(data_dir, "kidney_1_dense", "labels")
-        elif split == "validation":
+        elif split == "eval":
             self.imgs_dir = os.path.join(data_dir, "kidney_3_sparse", "images")
             self.msks_dir = os.path.join(data_dir, "kidney_3_sparse", "labels")
 
