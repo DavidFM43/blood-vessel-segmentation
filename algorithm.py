@@ -67,7 +67,11 @@ def update_params(
         model=model, batch=batch, mode="train", update_batch_norm=True
     )
 
-    loss = workload.loss_fn(logits_batch, batch["targets"]).mean()
+    loss = workload.loss_fn(logits_batch, batch["targets"])
+    if USE_PYTORCH_DDP:
+        # Use dist_nn.all_reduce to ensure correct loss and gradient scaling.
+        loss = dist_nn.all_reduce(loss)
+    loss = loss.mean()
     loss.backward()
 
     if hasattr(hyperparameters, "grad_clip"):
@@ -77,7 +81,7 @@ def update_params(
     optimizer_state["scheduler"].step()
 
     # Log training metrics - loss, grad_norm, batch_size.
-    if global_step <= 10 or global_step % 500 == 0:
+    if global_step <= 10 or global_step % 200 == 0:
         with torch.no_grad():
             parameters = [p for p in model.parameters() if p.grad is not None]
             grad_norm = torch.norm(
@@ -86,7 +90,7 @@ def update_params(
         if metrics_logger is not None:
             metrics_logger.append_scalar_metrics(
                 {
-                    "loss": loss.mean().item(),
+                    "loss": loss.item(),
                     "grad_norm": grad_norm.item(),
                 },
                 global_step,

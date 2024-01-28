@@ -24,10 +24,11 @@ enconder_weights = None
 in_channels = 1
 num_classes = 1
 loss_fn = nn.BCEWithLogitsLoss(reduction="none")
-max_allowed_runtime_sec = 3600  # 1 hour
-eval_period_time_sec = 600  # 10 min
-PR_THRESHOLD = 0.5
+max_allowed_runtime_sec = 60 * 2
+eval_period_time_sec = 60 * 2
+pr_threshold = 0.5
 num_workers = 2
+
 
 def get_global_eval_batch_size(split):
     eval_global_batch_size = -1
@@ -37,7 +38,7 @@ def get_global_eval_batch_size(split):
     # kidney_3_sparse
     if split == "eval":
         eval_global_batch_size = 8
-    
+
     if eval_global_batch_size % N_GPUS != 0:
         raise ValueError(
             f"The global eval batch size ({eval_global_batch_size}) has to be divisible by the number of GPUs ({N_GPUS})."
@@ -45,7 +46,9 @@ def get_global_eval_batch_size(split):
     return eval_global_batch_size
 
 
-def build_input_queue(split, data_dir, global_batch_size, rng=None, cycle=True, prefetch=True):
+def build_input_queue(
+    split, data_dir, global_batch_size, rng=None, cycle=True, prefetch=True
+):
     is_train = split == "train"
     train_transforms = A.Compose([A.RandomCrop(patch_size, patch_size)])
     eval_transforms = None
@@ -113,7 +116,7 @@ def init_model_fn(rng):
 def model_fn(model, batch, mode, update_batch_norm):
     del update_batch_norm
     inputs = batch["inputs"]
-    bs, c, h, w =  inputs.shape
+    bs, c, h, w = inputs.shape
     patcher = Patcher(h, w, patch_size=patch_size, overlap=patch_overlap)
 
     if mode == "eval_train":
@@ -136,56 +139,55 @@ def model_fn(model, batch, mode, update_batch_norm):
 
     return logits_batch.squeeze()
 
-def _eval_model_on_split(split, model, data_dir):
+
+def _eval_model_on_split(split, model, data_dir, prefetch=False):
     input_queue = build_input_queue(
-          split=split,
-          data_dir=data_dir,
-          global_batch_size=get_global_eval_batch_size(split),
-          cycle=False,
-          prefetch=True,
-          )
+        split=split,
+        data_dir=data_dir,
+        global_batch_size=get_global_eval_batch_size(split),
+        cycle=False,
+        prefetch=prefetch,
+    )
     dice_metric = SurfaceDiceMetric(n_batches=len(input_queue), device=DEVICE)
     loss = 0
     n = 0
-    
-    for batch in tqdm(input_queue, desc="evaluting"):
+
+    for batch in input_queue:
         batch = {"inputs": batch[0], "targets": batch[1]}
+        if not prefetch:
+            batch["inputs"] = batch["inputs"].to(DEVICE)
+            batch["targets"] = batch["targets"].to(DEVICE)
         logits_batch = model_fn(model, batch, split, update_batch_norm=False)
         loss_batch = loss_fn(logits_batch, batch["targets"])
-        predicted = torch.where(logits_batch >= PR_THRESHOLD, 1, 0)
+        predicted = torch.where(logits_batch.sigmoid() >= pr_threshold, 1, 0)
 
         dice_metric.process_batch(predicted, batch["targets"])
         loss += loss_batch.sum().item()
-        n += len(logits_batch)
+        n += logits_batch.numel()
 
     surface_dice = dice_metric.compute()
     loss /= n
-    metrics = {
-        "surface_dice": surface_dice,
-        "loss": loss
-        }
+    metrics = {"surface_dice": surface_dice, "loss": loss}
     return metrics
-        
+
+
 def eval_model(
-            model: nn.Module,
-            data_dir: str,
-            ) -> Dict[str, float]:
+    model: nn.Module,
+    data_dir: str,
+) -> Dict[str, float]:
     """Run a full evaluation of the model."""
-    logging.info('Evaluating on the training split.')
+    logging.info("Evaluating on the training split.")
     train_metrics = _eval_model_on_split(
-        'eval_train',
+        "eval_train",
         model,
         data_dir,
-        )
-    eval_metrics = {'train/' + k: v for k, v in train_metrics.items()}
+    )
+    eval_metrics = {"train/" + k: v for k, v in train_metrics.items()}
 
     # We always require a validation set.
-    logging.info('Evaluating on the validation split.')
-    validation_metrics = _eval_model_on_split(
-        'eval',
-        model,
-        data_dir)
+    logging.info("Evaluating on the validation split.")
+    validation_metrics = _eval_model_on_split("eval", model, data_dir)
     for k, v in validation_metrics.items():
-      eval_metrics['validation/' + k] = v
+        eval_metrics["validation/" + k] = v
 
     return eval_metrics
