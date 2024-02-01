@@ -22,6 +22,7 @@ import json
 import torch
 import random_utils as prng
 import workload
+from checkpoint_utils import save_checkpoint, maybe_load_checkpoint
 
 
 class TrainingCompleteError(Exception):
@@ -134,6 +135,14 @@ def train_once(
     preemption_count = 0
     logging.info("Initializing checkpoint and logger.")
     if log_dir is not None:
+        model, optimizer_state, train_state, global_step, eval_results = maybe_load_checkpoint(
+            model,
+            optimizer_state,
+            train_state,
+            global_step,
+            eval_results,
+            log_dir
+        )
         meta_file_name = os.path.join(log_dir, f"meta_data_{preemption_count}.json")
         logging.info(f"Saving meta data to {meta_file_name}.")
         meta_data = logger_utils.get_meta_data(workload, rng_seed)
@@ -242,9 +251,11 @@ def train_once(
                     _reset_cuda_mem()
         train_state["last_step_end_time"] = get_time()
 
+        
     metrics = {"eval_results": eval_results, "global_step": global_step}
 
     if log_dir is not None:
+        save_checkpoint(model, optimizer_state, train_state, global_step, eval_results, log_dir)
         metrics_logger.finish()
 
     return metrics
