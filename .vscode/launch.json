@@ -16,7 +16,8 @@
                 "--experiment_dir=~/ml-projects/blood-vessel-segmentation/experiments",
                 "--tuning_search_space=/home/dmorara/ml-projects/blood-vessel-segmentation/tuning_search_space.json",
                 "--experiment_name=baseline",
-                "--append_timestamp=True"
+                "--append_timestamp=True",
+                "--max_global_steps=2000"
             ]
         }
     ]
